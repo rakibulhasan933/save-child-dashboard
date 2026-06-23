@@ -9,6 +9,7 @@ Next.js App Router admin dashboard and backend API for a parental-control system
 - Drizzle ORM with Supabase Postgres through `DATABASE_URL`
 - Zod request validation
 - HTTP-only JWT admin session cookie
+- Custom Node server in `server.ts` for the app routes and WebSocket signaling endpoint
 
 ## Environment
 
@@ -32,7 +33,39 @@ pnpm db:migrate
 pnpm dev
 ```
 
+`pnpm dev` starts the custom server in watch mode, so the WebSocket signaling path stays available during local development.
+
 Open `http://localhost:3000/register` to create the first admin.
+
+## VPS Deployment
+
+This app is meant to run as a single Node process behind Nginx, Caddy, or another reverse proxy.
+
+1. Install Node.js 20+ and `pnpm` on the VPS.
+1. Clone the repository and copy the production environment values into `.env.production` or `.env.local`.
+1. Run `pnpm install --frozen-lockfile`.
+1. Run `pnpm db:migrate` against the production database.
+1. Run `pnpm build`.
+1. Start the service with `pnpm start`.
+1. Expose the app through a reverse proxy and forward WebSocket upgrades to the same port.
+
+The production command uses `server.ts`, so both the HTTP routes and the `/ws` signaling endpoint come up together.
+
+## Keeping It Up To Date
+
+When you deploy a new version to the VPS, use the same sequence every time:
+
+```bash
+git pull
+pnpm install --frozen-lockfile
+pnpm db:migrate
+pnpm build
+sudo systemctl restart super-sefty
+```
+
+Use `pnpm db:migrate` for production database changes. Keep `pnpm db:generate` for local schema work when the Drizzle schema changes in the repo.
+
+For dependency maintenance, check `pnpm outdated` periodically and update packages in a separate branch before shipping them to the VPS.
 
 ## Main Files
 
@@ -68,4 +101,4 @@ Open `http://localhost:3000/register` to create the first admin.
 - `PATCH /api/live-screen/:sessionId/end`
 - `PATCH /api/live-screen/:sessionId/fail`
 
-The live screen feature currently stores and updates session control state only. It does not include WebRTC, WebSockets, or video streaming.
+The live screen feature includes WebSocket signaling and WebRTC message relaying. It still does not include a media relay or video streaming server.

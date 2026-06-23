@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Copy, MonitorUp, Plus, Trash2 } from "lucide-react";
+import { Copy, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,7 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { apiFetch } from "@/lib/api-client";
+import { LiveScreenViewer } from "@/components/live-screen-viewer";
 
 type Child = {
   id: string;
@@ -37,14 +38,6 @@ type WebRule = {
   category: string | null;
   isBlocked: boolean;
   createdAt: string;
-};
-
-type LiveScreenSession = {
-  id: string;
-  status: "requested" | "active" | "ended" | "failed";
-  startedAt: string | null;
-  endedAt: string | null;
-  reason: string | null;
 };
 
 export function ChildDetail({ childId }: { childId: string }) {
@@ -79,7 +72,7 @@ export function ChildDetail({ childId }: { childId: string }) {
           <WebRules childId={childId} />
         </TabsContent>
         <TabsContent value="live">
-          <LiveScreen childId={childId} />
+          <LiveScreenViewer childId={childId} showChildHeader={false} />
         </TabsContent>
       </Tabs>
     </div>
@@ -322,66 +315,6 @@ function WebRuleRow({ rule, queryKey }: { rule: WebRule; queryKey: unknown[] }) 
         </Button>
       </TableCell>
     </TableRow>
-  );
-}
-
-function LiveScreen({ childId }: { childId: string }) {
-  const queryClient = useQueryClient();
-  const queryKey = ["live-screen", childId];
-  const { data } = useQuery({
-    queryKey,
-    queryFn: () => apiFetch<{ sessions: LiveScreenSession[] }>(`/api/children/${childId}/live-screen`)
-  });
-  const requestSession = useMutation({
-    mutationFn: () => apiFetch(`/api/children/${childId}/live-screen/request`, { method: "POST" }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey });
-      toast.success("Live screen requested");
-    },
-    onError: (error) => toast.error(error.message)
-  });
-
-  return (
-    <Card>
-      <CardHeader className="flex-row items-center justify-between space-y-0">
-        <div>
-          <CardTitle>Live screen</CardTitle>
-          <CardDescription>Control-layer requests only. Streaming is not implemented yet.</CardDescription>
-        </div>
-        <Button onClick={() => requestSession.mutate()} disabled={requestSession.isPending}>
-          <MonitorUp className="h-4 w-4" />
-          Request live screen
-        </Button>
-      </CardHeader>
-      <CardContent>
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Status</TableHead>
-              <TableHead>Started</TableHead>
-              <TableHead>Ended</TableHead>
-              <TableHead>Reason</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {data?.sessions.length ? (
-              data.sessions.map((session) => (
-                <TableRow key={session.id}>
-                  <TableCell>{session.status}</TableCell>
-                  <TableCell>{session.startedAt ? new Date(session.startedAt).toLocaleString() : "-"}</TableCell>
-                  <TableCell>{session.endedAt ? new Date(session.endedAt).toLocaleString() : "-"}</TableCell>
-                  <TableCell>{session.reason ?? "-"}</TableCell>
-                </TableRow>
-              ))
-            ) : (
-              <TableRow>
-                <TableCell colSpan={4}>No sessions yet.</TableCell>
-              </TableRow>
-            )}
-          </TableBody>
-        </Table>
-      </CardContent>
-    </Card>
   );
 }
 

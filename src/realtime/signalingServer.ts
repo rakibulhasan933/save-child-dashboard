@@ -74,7 +74,7 @@ async function authenticateFromRequest(
 ) {
   const url = new URL(request.url ?? "/", "http://localhost");
   const role = url.searchParams.get("role");
-  const token = url.searchParams.get("token");
+  const token = url.searchParams.get("token") ?? getCookie(request.headers.cookie, "admin_session");
   const deviceUuid = url.searchParams.get("deviceUuid");
 
   if (!role || !token) return false;
@@ -422,4 +422,15 @@ function parseJson(data: RawData) {
   } catch {
     return null;
   }
+}
+
+function getCookie(cookieHeader: string | undefined, name: string) {
+  if (!cookieHeader) return null;
+
+  for (const part of cookieHeader.split(";")) {
+    const [rawKey, ...rawValue] = part.trim().split("=");
+    if (rawKey === name) return decodeURIComponent(rawValue.join("="));
+  }
+
+  return null;
 }
