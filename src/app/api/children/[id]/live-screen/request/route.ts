@@ -1,30 +1,56 @@
-import { NextResponse } from "next/server";
-import { db } from "@/db";
-import { liveScreenSessions } from "@/db/schema";
-import { requireAdminApi } from "@/lib/auth";
-import { getOwnedChild } from "@/lib/data-access";
+import { NextRequest, NextResponse } from "next/server";
+import { cookies } from "next/headers";
+import { SAVE_GARD_HTTP_BASE_URL } from "@/config/saveGard";
 import { apiError, handleRouteError } from "@/lib/http";
-import { signalLiveScreenRequest } from "@/realtime";
 
 type Context = { params: Promise<{ id: string }> };
 
-export async function POST(_request: Request, { params }: Context) {
+export async function POST(_request:NextRequest, { params }: Context) {
   try {
     const { id } = await params;
-    const { admin, response } = await requireAdminApi();
-    if (response) return response;
+    const cookieStore = await cookies();
+    const adminSession = cookieStore.get("admin_session")?.value;
+    if (!adminSession) return apiError(401, "Unauthorized");
 
-    const child = await getOwnedChild(id, admin.id);
-    if (!child) return apiError(404, "Child not found");
+    const body = await _request.text();
+    const contentType = _request.headers.get("content-type") ?? "application/json";
+    const upstreamResponse = await fetch(
+      `${SAVE_GARD_HTTP_BASE_URL}/api/children/${id}/live-screen/request`,
+      {
+        method: _request.method,
+        headers: {
+          "Content-Type": contentType,
+          Cookie: `admin_session=${encodeURIComponent(adminSession)}`
+        },
+        body: body.length > 0 ? body : undefined,
+        cache: "no-store"
+      }
+    ); 
 
-    const [session] = await db
-      .insert(liveScreenSessions)
-      .values({ childId: id, adminId: admin.id, status: "requested" })
-      .returning();
+    const data = await upstreamResponse.json().catch(() => ({}));
+    const headers = {
+      "X-SaveGard-Proxy": "live-screen-request",
+      "X-SaveGard-Upstream-Status": String(upstreamResponse.status)
+    };
 
-    const signaling = await signalLiveScreenRequest(session.id);
+    console.info("[live-screen-proxy] upstream response", {
+      childId: id,
+      status: upstreamResponse.status,
+      ok: upstreamResponse.ok
+    });
 
-    return NextResponse.json({ session, signaling }, { status: 201 });
+    if (!upstreamResponse.ok) {
+      return NextResponse.json(
+        {
+          error: typeof data.error === "string" ? data.error : "Unable to request live screen",
+          source: "external_backend",
+          upstreamStatus: upstreamResponse.status
+        },
+        { status: upstreamResponse.status, headers }
+      );
+    }
+
+    return NextResponse.json(data, { status: upstreamResponse.status, headers });
   } catch (error) {
     return handleRouteError(error);
   }

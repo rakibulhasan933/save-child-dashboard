@@ -25,30 +25,14 @@ void main().catch((error) => {
 async function main() {
   await app.prepare();
 
-  const [{ createSignalingServer }, { verifySessionToken }, { verifyChildToken }] = await Promise.all([
-    import("./src/realtime/signalingServer"),
-    import("./src/lib/auth"),
-    import("./src/lib/childToken")
-  ]);
-
   const server = createServer((request, response) => {
     const parsedUrl = parse(request.url ?? "/", true);
     void handle(request, response, parsedUrl);
   });
 
-  createSignalingServer({
-    server,
-    path: "/ws",
-    verifyAdminToken: async (token) => {
-      const payload = await verifySessionToken(token);
-      return payload ? { id: payload.adminId, email: payload.email } : null;
-    },
-    verifyChildToken
-  });
-
   server.listen(port, hostname, () => {
     console.log(`> Ready on http://localhost:${port}`);
-    console.log(`> Signaling WebSocket ready on ws://localhost:${port}/ws`);
+    console.log("> Signaling WebSocket handled by wss://save-gard-api.duckdns.org/ws");
   });
 }
 

@@ -40,7 +40,7 @@ type WebRule = {
   createdAt: string;
 };
 
-export function ChildDetail({ childId }: { childId: string }) {
+export function ChildDetail({ childId, adminToken }: { childId: string; adminToken: string }) {
   const childQuery = useQuery({
     queryKey: ["child", childId],
     queryFn: () => apiFetch<{ child: Child }>(`/api/children/${childId}`)
@@ -72,7 +72,7 @@ export function ChildDetail({ childId }: { childId: string }) {
           <WebRules childId={childId} />
         </TabsContent>
         <TabsContent value="live">
-          <LiveScreenViewer childId={childId} showChildHeader={false} />
+          <LiveScreenViewer childId={childId} adminToken={adminToken} showChildHeader={false}  />
         </TabsContent>
       </Tabs>
     </div>

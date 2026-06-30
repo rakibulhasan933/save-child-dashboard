@@ -1,0 +1,6 @@
+export {
+  SAVE_GARD_ADMIN_TOKEN,
+  SAVE_GARD_HTTP_BASE_URL,
+  SAVE_GARD_WS_BASE_URL,
+  SAVE_GARD_WS_PATH
+} from "@/config/saveGard";

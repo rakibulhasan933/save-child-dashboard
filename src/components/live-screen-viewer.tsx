@@ -10,15 +10,16 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { apiFetch } from "@/lib/api-client";
 import {
   createAdminSignalingClient,
+  describeWebSocketEvent,
   type AdminSignalingClient,
+  type ClientSignalingMessage,
   type SignalingMessage
 } from "@/lib/live-screen-signaling";
 import {
   addRemoteIceCandidate,
+  acceptRemoteOfferAndCreateAnswer,
   closePeerConnection,
-  createAdminPeerConnection,
-  createAndSetLocalOffer,
-  setRemoteAnswer
+  createAdminPeerConnection
 } from "@/lib/liveScreenWebRTC";
 
 type ViewerStatus = "idle" | "waiting" | "streaming" | "ended";
@@ -34,6 +35,8 @@ type Child = {
 
 type LiveScreenSession = {
   id: string;
+  adminId: string;
+  childId: string;
   status: "requested" | "active" | "ended" | "failed";
   startedAt: string | null;
   endedAt: string | null;
@@ -42,10 +45,12 @@ type LiveScreenSession = {
 
 type RequestResponse = {
   session: LiveScreenSession;
-  signaling?: { delivered: number; reason: string | null };
+  signaling?: { delivered: number | null; reason: string | null };
 };
 
-export function LiveScreenViewer({ childId, showChildHeader = true }: { childId: string; showChildHeader?: boolean }) {
+const NO_CHILD_VIDEO_MESSAGE = "Live screen ended: no child device successfully accepted and sent video.";
+
+export function LiveScreenViewer({ childId, adminToken, showChildHeader = true }: { childId: string; adminToken: string; showChildHeader?: boolean }) {
   const queryClient = useQueryClient();
   const hasValidChildId = childId.trim().length > 0;
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -54,6 +59,7 @@ export function LiveScreenViewer({ childId, showChildHeader = true }: { childId:
   const sessionIdRef = useRef<string | null>(null);
   const statusRef = useRef<ViewerStatus>("idle");
   const pendingIceRef = useRef<RTCIceCandidateInit[]>([]);
+  const terminalNoticeRef = useRef<string | null>(null);
 
   const [status, setStatusState] = useState<ViewerStatus>("idle");
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
@@ -117,7 +123,7 @@ export function LiveScreenViewer({ childId, showChildHeader = true }: { childId:
     [closeLocalResources, queryClient, sessionsQueryKey, setStatus]
   );
 
-  const sendSignaling = useCallback((message: SignalingMessage, errorMessage = "Signaling connection is not available") => {
+  const sendSignaling = useCallback((message: ClientSignalingMessage, errorMessage = "Signaling connection is not available") => {
     const sent = signalingRef.current?.send(message) ?? false;
     if (!sent) {
       toast.error(errorMessage);
@@ -126,57 +132,26 @@ export function LiveScreenViewer({ childId, showChildHeader = true }: { childId:
     return sent;
   }, []);
 
-  const startWebRtcOffer = useCallback(
-    async (sessionId: string) => {
-      try {
-        closePeerConnection(pcRef.current);
-        pendingIceRef.current = [];
-
-        const pc = createAdminPeerConnection({
-          onTrack: (stream) => {
-            const video = videoRef.current;
-            if (!video) return;
-            video.srcObject = stream;
-            setStatus("streaming");
-            void video.play().catch(() => toast.error("Unable to start video playback"));
-          },
-          onIceCandidate: (candidate) => {
-            sendSignaling({
-              type: "WEBRTC_ICE_CANDIDATE",
-              payload: { sessionId, fromRole: "admin", candidate }
-            });
-          },
-          onConnectionFailed: () => {
-            cleanupLocalSession("ended", "webrtc_disconnected", "WebRTC connection disconnected");
-          },
-          onConnected: () => {
-            setStatus("streaming");
-          }
-        });
-
-        pcRef.current = pc;
-        const sdp = await createAndSetLocalOffer(pc);
-        const sent = sendSignaling(
-          { type: "WEBRTC_OFFER", payload: { sessionId, fromRole: "admin", sdp } },
-          "Unable to send WebRTC offer"
-        );
-        if (!sent) {
-          cleanupLocalSession("ended", "signaling_unavailable", "Unable to send WebRTC offer");
-        }
-      } catch (offerError) {
-        const message = offerError instanceof Error ? offerError.message : "Unable to start WebRTC";
-        toast.error(message);
-        cleanupLocalSession("ended", "webrtc_failed", message);
-      }
-    },
-    [cleanupLocalSession, sendSignaling, setStatus]
-  );
-
   const handleSignalingMessage = useCallback(
     (message: SignalingMessage) => {
       if (message.type === "PONG") return;
 
       if (message.type === "ERROR") {
+        console.error("[live-screen] signaling error received", {
+          code: message.payload.code,
+          message: message.payload.message,
+          sessionId: sessionIdRef.current
+        });
+        if (
+          message.payload.code === "CHILD_OFFLINE" ||
+          message.payload.message === "No accepted child device is connected for this session"
+        ) {
+          terminalNoticeRef.current = NO_CHILD_VIDEO_MESSAGE;
+          cleanupLocalSession("ended", "no_child_video", NO_CHILD_VIDEO_MESSAGE);
+          toast.error(NO_CHILD_VIDEO_MESSAGE);
+          return;
+        }
+
         setError(message.payload.message);
         toast.error(message.payload.message);
         return;
@@ -196,14 +171,18 @@ export function LiveScreenViewer({ childId, showChildHeader = true }: { childId:
         setCurrentSessionId(message.payload.sessionId);
         setEndedReason(null);
         setError(null);
+        terminalNoticeRef.current = null;
         setStatus("waiting");
-        void startWebRtcOffer(message.payload.sessionId);
+        console.info("[live-screen] accepted; waiting for child WebRTC offer", {
+          sessionId: message.payload.sessionId
+        });
         return;
       }
 
       if (message.type === "LIVE_SCREEN_REJECTED") {
         if (message.payload.childId !== childId) return;
         if (sessionIdRef.current && message.payload.sessionId !== sessionIdRef.current) return;
+        terminalNoticeRef.current = null;
         toast.error(`Live screen rejected: ${message.payload.reason}`);
         cleanupLocalSession("idle", message.payload.reason, `Rejected: ${message.payload.reason}`);
         return;
@@ -212,53 +191,158 @@ export function LiveScreenViewer({ childId, showChildHeader = true }: { childId:
       if (message.type === "LIVE_SCREEN_ENDED") {
         if (message.payload.childId !== childId) return;
         if (sessionIdRef.current && message.payload.sessionId !== sessionIdRef.current) return;
+        terminalNoticeRef.current = null;
         cleanupLocalSession("ended", message.payload.reason ?? "ended");
         return;
       }
 
-      if (message.type === "WEBRTC_ANSWER") {
+      if (message.type === "WEBRTC_OFFER") {
         if (sessionIdRef.current && message.payload.sessionId !== sessionIdRef.current) return;
-        const pc = pcRef.current;
-        if (!pc || message.payload.fromRole !== "child") return;
+        if (message.payload.fromRole !== "child") return;
 
-        void setRemoteAnswer(pc, message.payload.sdp)
-          .then(async () => {
+        console.info("[live-screen] child WebRTC offer received", {
+          sessionId: message.payload.sessionId,
+          sdpLength: message.payload.sdp.length
+        });
+        closePeerConnection(pcRef.current);
+        pendingIceRef.current = [];
+
+        const sessionId = message.payload.sessionId;
+        sessionIdRef.current = sessionId;
+        setCurrentSessionId(sessionId);
+        const pc = createAdminPeerConnection({
+          onTrack: (stream) => {
+            const video = videoRef.current;
+            console.info("[live-screen] remote track added", {
+              sessionId,
+              tracks: stream.getTracks().map((track) => ({
+                id: track.id,
+                kind: track.kind,
+                readyState: track.readyState
+              }))
+            });
+            if (!video) {
+              console.warn("[live-screen] remote stream received before video element was ready", {
+                sessionId,
+                tracks: stream.getTracks().map((track) => track.kind)
+              });
+              return;
+            }
+            video.srcObject = stream;
+            setStatus("streaming");
+            console.info("[live-screen] video srcObject set from remote stream", {
+              sessionId,
+              tracks: stream.getTracks().map((track) => ({
+                id: track.id,
+                kind: track.kind,
+                readyState: track.readyState
+              }))
+            });
+            void video.play().catch((playError) => {
+              console.warn("[live-screen] video play failed", {
+                sessionId,
+                error: playError instanceof Error ? playError.message : playError
+              });
+              toast.error("Unable to start video playback");
+            });
+          },
+          onIceCandidate: (candidate) => {
+            console.info("[live-screen] sending admin ICE candidate", {
+              sessionId,
+              sdpMid: candidate.sdpMid,
+              sdpMLineIndex: candidate.sdpMLineIndex
+            });
+            sendSignaling({
+              type: "WEBRTC_ICE_CANDIDATE",
+              payload: { sessionId, fromRole: "admin", candidate }
+            });
+          },
+          onConnectionFailed: () => {
+            cleanupLocalSession("ended", "webrtc_disconnected", "WebRTC connection disconnected");
+          },
+          onConnected: () => {
+            setStatus("streaming");
+          }
+        });
+
+        pcRef.current = pc;
+        void acceptRemoteOfferAndCreateAnswer(pc, message.payload.sdp)
+          .then(async (sdp) => {
+            const sent = sendSignaling(
+              { type: "WEBRTC_ANSWER", payload: { sessionId, fromRole: "admin", sdp } },
+              "Unable to send WebRTC answer"
+            );
+            if (!sent) {
+              cleanupLocalSession("ended", "signaling_unavailable", "Unable to send WebRTC answer");
+              return;
+            }
+
+            console.info("[live-screen] WebRTC answer sent", { sessionId, sdpLength: sdp.length });
             const pending = pendingIceRef.current;
             pendingIceRef.current = [];
             for (const candidate of pending) {
               await addRemoteIceCandidate(pc, candidate);
             }
-            setStatus("streaming");
           })
-          .catch((answerError) => {
-            const text = answerError instanceof Error ? answerError.message : "Unable to apply WebRTC answer";
+          .catch((offerError) => {
+            const text = offerError instanceof Error ? offerError.message : "Unable to answer WebRTC offer";
             toast.error(text);
             cleanupLocalSession("ended", "webrtc_failed", text);
           });
         return;
       }
 
+      if (message.type === "WEBRTC_ANSWER") {
+        console.info("[live-screen] received WebRTC answer", {
+          sessionId: message.payload.sessionId,
+          fromRole: message.payload.fromRole,
+          sdpLength: message.payload.sdp.length,
+          ignored: true
+        });
+        return;
+      }
+
       if (message.type === "WEBRTC_ICE_CANDIDATE") {
         if (sessionIdRef.current && message.payload.sessionId !== sessionIdRef.current) return;
         const pc = pcRef.current;
-        if (!pc || message.payload.fromRole !== "child" || !message.payload.candidate) return;
-
-        if (!pc.remoteDescription) {
+        if (message.payload.fromRole !== "child" || !message.payload.candidate) return;
+        if (!pc) {
+          console.info("[live-screen] queued child ICE candidate before peer connection", {
+            sessionId: message.payload.sessionId,
+            sdpMid: message.payload.candidate.sdpMid,
+            sdpMLineIndex: message.payload.candidate.sdpMLineIndex
+          });
           pendingIceRef.current.push(message.payload.candidate);
           return;
         }
 
+        if (!pc.remoteDescription) {
+          console.info("[live-screen] queued child ICE candidate", {
+            sessionId: message.payload.sessionId,
+            sdpMid: message.payload.candidate.sdpMid,
+            sdpMLineIndex: message.payload.candidate.sdpMLineIndex
+          });
+          pendingIceRef.current.push(message.payload.candidate);
+          return;
+        }
+
+        console.info("[live-screen] child ICE candidate received", {
+          sessionId: message.payload.sessionId,
+          sdpMid: message.payload.candidate.sdpMid,
+          sdpMLineIndex: message.payload.candidate.sdpMLineIndex
+        });
         void addRemoteIceCandidate(pc, message.payload.candidate).catch((candidateError) => {
           const text = candidateError instanceof Error ? candidateError.message : "Unable to add ICE candidate";
           toast.error(text);
         });
       }
     },
-    [childId, cleanupLocalSession, setStatus, startWebRtcOffer]
+    [childId, cleanupLocalSession, sendSignaling, setStatus]
   );
 
   useEffect(() => {
     const client = createAdminSignalingClient({
+      adminToken,
       onMessage: handleSignalingMessage,
       onConnecting: () => {
         setSocketStatus("connecting");
@@ -271,15 +355,16 @@ export function LiveScreenViewer({ childId, showChildHeader = true }: { childId:
         setSocketStatus("disconnected");
         if (event.code === 4001) {
           setError("Unable to connect to signaling server: unauthorized");
+        } else if (event.reason) {
+          setError(`Unable to connect to signaling server: ${event.reason}`);
         }
         if (statusRef.current === "waiting" || statusRef.current === "streaming") {
           cleanupLocalSession("ended", "websocket_disconnected", "Signaling connection closed");
         }
       },
       onError: (event) => {
-        console.error("[admin-ws] Viewer received WebSocket error", event);
-        setSocketStatus("disconnected");
-        setError("Unable to connect to signaling server");
+        console.error("[admin-ws] Viewer received WebSocket error", describeWebSocketEvent(event));
+        setError("Signaling WebSocket error; check the close code/reason in the console");
       }
     });
 
@@ -293,7 +378,7 @@ export function LiveScreenViewer({ childId, showChildHeader = true }: { childId:
       client.close();
       closeLocalResources();
     };
-  }, [cleanupLocalSession, closeLocalResources, handleSignalingMessage]);
+  }, [adminToken, cleanupLocalSession, closeLocalResources, handleSignalingMessage]);
 
   const reconnectSignaling = useCallback(() => {
     void signalingRef.current?.connect().catch((connectError) => {
@@ -315,6 +400,7 @@ export function LiveScreenViewer({ childId, showChildHeader = true }: { childId:
       setCurrentSessionId(data.session.id);
       setEndedReason(null);
       setError(null);
+      terminalNoticeRef.current = null;
       setStatus("waiting");
       void queryClient.invalidateQueries({ queryKey: sessionsQueryKey });
 
@@ -352,11 +438,16 @@ export function LiveScreenViewer({ childId, showChildHeader = true }: { childId:
       }
     },
     onSettled: (_data, endError) => {
-      cleanupLocalSession("ended", "admin_ended");
+      const terminalNotice = terminalNoticeRef.current;
+      if (terminalNotice) {
+        cleanupLocalSession("ended", "no_child_video", terminalNotice);
+      } else {
+        cleanupLocalSession("ended", "admin_ended");
+      }
       if (endError) {
         const text = endError instanceof Error ? endError.message : "Unable to update session record";
         toast.error(text);
-      } else {
+      } else if (!terminalNotice) {
         toast.success("Live screen session ended");
       }
     }
@@ -418,11 +509,31 @@ export function LiveScreenViewer({ childId, showChildHeader = true }: { childId:
           {childPresence.reason ? <p className="text-xs text-muted-foreground">{childPresence.reason}</p> : null}
 
           <div className="relative aspect-video overflow-hidden rounded-md border bg-black">
-            <video ref={videoRef} className="h-full w-full bg-black object-contain" autoPlay playsInline muted />
+            <video
+              ref={videoRef}
+              className="h-full w-full bg-black object-contain"
+              autoPlay
+              playsInline
+              muted
+              onLoadedMetadata={() => {
+                const video = videoRef.current;
+                console.info("[live-screen] video metadata loaded", {
+                  sessionId: sessionIdRef.current,
+                  videoWidth: video?.videoWidth,
+                  videoHeight: video?.videoHeight
+                });
+              }}
+              onPlaying={() => {
+                console.info("[live-screen] video playback started", {
+                  sessionId: sessionIdRef.current
+                });
+                setStatus("streaming");
+              }}
+            />
             {status !== "streaming" ? (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/70 text-sm text-white">
                 {status === "waiting" ? <Radio className="h-5 w-5 animate-pulse" /> : <MonitorUp className="h-5 w-5" />}
-                <span>{videoPlaceholder(status)}</span>
+                <span>{videoPlaceholder(status, endedReason)}</span>
               </div>
             ) : null}
           </div>
@@ -487,6 +598,7 @@ function statusLabel(status: ViewerStatus, reason: string | null) {
   if (status === "idle") return "Idle";
   if (status === "waiting") return "Waiting for child";
   if (status === "streaming") return "Streaming";
+  if (reason === "no_child_video") return NO_CHILD_VIDEO_MESSAGE;
   return `Ended${reason ? ` (${reason})` : ""}`;
 }
 
@@ -496,8 +608,11 @@ function socketStatusLabel(status: SocketStatus) {
   return "Disconnected";
 }
 
-function videoPlaceholder(status: ViewerStatus) {
+function videoPlaceholder(status: ViewerStatus, reason: string | null) {
   if (status === "waiting") return "Waiting for child to accept and send video";
+  if (status === "ended" && reason === "no_child_video") {
+    return NO_CHILD_VIDEO_MESSAGE;
+  }
   if (status === "ended") return "Session ended";
   return "No active live screen session";
 }

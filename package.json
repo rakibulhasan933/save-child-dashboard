@@ -4,9 +4,9 @@
   "packageManager": "pnpm@9.15.4",
   "private": true,
   "scripts": {
-    "dev": "tsx watch server.ts",
+    "dev": "next dev",
     "build": "next build",
-    "start": "NODE_ENV=production tsx server.ts",
+    "start": "next start",
     "lint": "eslint .",
     "format": "prettier --write .",
     "db:generate": "drizzle-kit generate",

@@ -17,23 +17,35 @@ export function createAdminPeerConnection({
     iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
   });
 
-  pc.addTransceiver("video", { direction: "recvonly" });
-
   pc.onicecandidate = (event) => {
-    if (event.candidate) onIceCandidate(event.candidate.toJSON());
+    if (event.candidate) {
+      console.info("[admin-webrtc] local ICE candidate", {
+        candidateType: event.candidate.type,
+        sdpMid: event.candidate.sdpMid,
+        sdpMLineIndex: event.candidate.sdpMLineIndex
+      });
+      onIceCandidate(event.candidate.toJSON());
+    }
   };
 
   pc.ontrack = (event) => {
     const [stream] = event.streams;
+    console.info("[admin-webrtc] remote track received", {
+      kind: event.track.kind,
+      id: event.track.id,
+      readyState: event.track.readyState,
+      streams: event.streams.length
+    });
     onTrack(stream ?? new MediaStream([event.track]));
   };
 
   pc.onconnectionstatechange = () => {
+    console.info("[admin-webrtc] connection state", pc.connectionState);
     if (pc.connectionState === "connected") {
       onConnected?.();
     }
 
-    if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
+    if (pc.connectionState === "failed" || pc.connectionState === "closed") {
       onConnectionFailed?.();
     }
   };
@@ -41,18 +53,21 @@ export function createAdminPeerConnection({
   return pc;
 }
 
-export async function createAndSetLocalOffer(pc: RTCPeerConnection) {
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-  return offer.sdp ?? "";
-}
-
-export async function setRemoteAnswer(pc: RTCPeerConnection, sdp: string) {
-  await pc.setRemoteDescription(new RTCSessionDescription({ type: "answer", sdp }));
+export async function acceptRemoteOfferAndCreateAnswer(pc: RTCPeerConnection, sdp: string) {
+  await pc.setRemoteDescription(new RTCSessionDescription({ type: "offer", sdp }));
+  console.info("[admin-webrtc] offer applied");
+  const answer = await pc.createAnswer();
+  await pc.setLocalDescription(answer);
+  console.info("[admin-webrtc] answer created");
+  return answer.sdp ?? "";
 }
 
 export async function addRemoteIceCandidate(pc: RTCPeerConnection, candidate: RTCIceCandidateInit) {
   await pc.addIceCandidate(new RTCIceCandidate(candidate));
+  console.info("[admin-webrtc] remote ICE candidate added", {
+    sdpMid: candidate.sdpMid,
+    sdpMLineIndex: candidate.sdpMLineIndex
+  });
 }
 
 export function closePeerConnection(pc: RTCPeerConnection | null) {

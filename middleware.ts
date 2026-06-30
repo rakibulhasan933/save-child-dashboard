@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { buildCorsHeaders } from "@/lib/http";
 
 const protectedRoutes = ["/dashboard", "/children"];
 const authRoutes = ["/login", "/register"];
@@ -21,6 +22,20 @@ async function isAuthenticatedRequest(request: NextRequest) {
 
 export async function middleware(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
+  const isApiRoute = pathname.startsWith("/api/");
+
+  if (isApiRoute) {
+    const headers = buildCorsHeaders(request);
+
+    if (request.method === "OPTIONS") {
+      return new NextResponse(null, { status: 204, headers });
+    }
+
+    const response = NextResponse.next();
+    Object.entries(headers).forEach(([key, value]) => response.headers.set(key, value));
+    return response;
+  }
+
   const isProtected = protectedRoutes.some((route) => pathname.startsWith(route));
   const isAuthRoute = authRoutes.some((route) => pathname.startsWith(route));
   const authenticated = await isAuthenticatedRequest(request);
@@ -37,5 +52,5 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/dashboard/:path*", "/children/:path*", "/login", "/register"]
+  matcher: ["/api/:path*", "/dashboard/:path*", "/children/:path*", "/login", "/register"]
 };
